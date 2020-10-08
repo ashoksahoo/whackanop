@@ -198,8 +198,8 @@ func main() {
 
 	flags.Parse(os.Args[1:])
 	if *version {
-		//fmt.Println(Version)
-		//os.Exit(0)
+		fmt.Println(Version)
+		os.Exit(0)
 	}
 	var query bson.M
 	if err := json.Unmarshal([]byte(*querystr), &query); err != nil {
