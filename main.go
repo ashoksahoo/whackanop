@@ -177,9 +177,9 @@ func main() {
 	querystr := flags.String("query", `{"op": "query", "secs_running": {"$gt": 60}}`, "query sent to db.currentOp()")
 	debug := flags.Bool("debug", true, "in debug mode, operations that match the query are logged instead of killed")
 	version := flags.Bool("version", false, "print the version and exit")
-	verbose := flags.Bool("verbose", true, "more verbose logging")
+	verbose := flags.Bool("verbose", false, "more verbose logging")
 
-	secretManager := flags.Bool("secret", true, "Enable SecretManager")
+	secretManager := flags.Bool("secret", false, "Enable SecretManager")
 	if *secretManager {
 		secretName := flags.String("secretname", "whackanop",
 			"SecretManager Name to connect")
