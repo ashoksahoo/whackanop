@@ -9,6 +9,11 @@ import (
 	"regexp"
 	"time"
 
+	"encoding/base64"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/secretsmanager"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 )
@@ -69,7 +74,7 @@ type WhackAnOp struct {
 
 // Run polls for ops, killing any it finds.
 func (wao WhackAnOp) Run() error {
-	for _ = range wao.Tick {
+	for range wao.Tick {
 		ops, err := wao.OpFinder.Find(wao.Query)
 		if err != nil {
 			return fmt.Errorf("whackanop: error finding ops %s", err)
@@ -101,19 +106,100 @@ func validateMongoURL(mongourl string) error {
 	return nil
 }
 
+func getSecret(secretName string , region string) string {
+
+	//Create a Secrets Manager client
+	svc := secretsmanager.New(session.New(),
+		aws.NewConfig().WithRegion(region))
+	input := &secretsmanager.GetSecretValueInput{
+		SecretId:     aws.String(secretName),
+		VersionStage: aws.String("AWSCURRENT"), // VersionStage defaults to AWSCURRENT if unspecified
+	}
+
+	// In this sample we only handle the specific exceptions for the 'GetSecretValue' API.
+	// See https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
+
+	result, err := svc.GetSecretValue(input)
+	if err != nil {
+		if aerr, ok := err.(awserr.Error); ok {
+			switch aerr.Code() {
+			case secretsmanager.ErrCodeDecryptionFailure:
+				// Secrets Manager can't decrypt the protected secret text using the provided KMS key.
+				fmt.Println(secretsmanager.ErrCodeDecryptionFailure, aerr.Error())
+
+			case secretsmanager.ErrCodeInternalServiceError:
+				// An error occurred on the server side.
+				fmt.Println(secretsmanager.ErrCodeInternalServiceError, aerr.Error())
+
+			case secretsmanager.ErrCodeInvalidParameterException:
+				// You provided an invalid value for a parameter.
+				fmt.Println(secretsmanager.ErrCodeInvalidParameterException, aerr.Error())
+
+			case secretsmanager.ErrCodeInvalidRequestException:
+				// You provided a parameter value that is not valid for the current state of the resource.
+				fmt.Println(secretsmanager.ErrCodeInvalidRequestException, aerr.Error())
+
+			case secretsmanager.ErrCodeResourceNotFoundException:
+				// We can't find the resource that you asked for.
+				fmt.Println(secretsmanager.ErrCodeResourceNotFoundException, aerr.Error())
+			}
+		} else {
+			// Print the error, cast err to awserr.Error to get the Code and
+			// Message from an error.
+			fmt.Println(err.Error())
+		}
+		return ""
+	}
+
+	// Decrypts secret using the associated KMS CMK.
+	// Depending on whether the secret is a string or binary, one of these fields will be populated.
+	var secretString, decodedBinarySecret string
+	if result.SecretString != nil {
+		secretString = *result.SecretString
+		return secretString
+	} else {
+		decodedBinarySecretBytes := make([]byte, base64.StdEncoding.DecodedLen(len(result.SecretBinary)))
+		len, err := base64.StdEncoding.Decode(decodedBinarySecretBytes, result.SecretBinary)
+		if err != nil {
+			fmt.Println("Base64 Decode Error:", err)
+			return ""
+		}
+		decodedBinarySecret = string(decodedBinarySecretBytes[:len])
+		return decodedBinarySecret
+	}
+}
+
 func main() {
 	flags := flag.NewFlagSet("whackanop", flag.ExitOnError)
-	mongourl := flags.String("mongourl", "mongodb://localhost?connect=direct",
+	mongourl := flags.String("mongourl", "mongodb://localhost:27017/?connect=direct",
 		"mongo url to connect to. Must specify connect=direct to guarantee admin commands are run on the specified server.")
 	interval := flags.Int("interval", 1, "how often, in seconds, to poll mongo for operations")
 	querystr := flags.String("query", `{"op": "query", "secs_running": {"$gt": 60}}`, "query sent to db.currentOp()")
 	debug := flags.Bool("debug", true, "in debug mode, operations that match the query are logged instead of killed")
 	version := flags.Bool("version", false, "print the version and exit")
-	verbose := flags.Bool("verbose", false, "more verbose logging")
+	verbose := flags.Bool("verbose", true, "more verbose logging")
+
+	secretManager := flags.Bool("secret", true, "Enable SecretManager")
+	if *secretManager {
+		secretName := flags.String("secretname", "whackanop",
+			"SecretManager Name to connect")
+		region := flags.String("region", "ap-southeast-1",
+			"SecretManager Name to connect")
+		secretPath := flags.String("secretpath", "local",
+			"SecretManager Path to connect")
+		var secretString = getSecret(*secretName, *region)
+		secretBytes := []byte(secretString)
+		var raw map[string]interface{}
+		if err := json.Unmarshal(secretBytes, &raw); err != nil {
+			panic(err)
+		}
+		*mongourl = fmt.Sprintf("%v", raw[*secretPath])
+	}
+
 	flags.Parse(os.Args[1:])
 	if *version {
-		fmt.Println(Version)
-		os.Exit(0)
+		//fmt.Println(Version)
+		//os.Exit(0)
 	}
 	var query bson.M
 	if err := json.Unmarshal([]byte(*querystr), &query); err != nil {
@@ -123,18 +209,18 @@ func main() {
 	if err := validateMongoURL(*mongourl); err != nil {
 		log.Fatal(err)
 	}
-	session, err := mgo.Dial(*mongourl)
+	mongoSession, err := mgo.Dial(*mongourl)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer session.Close()
-	session.SetMode(mgo.Monotonic, false)
+	defer mongoSession.Close()
+	mongoSession.SetMode(mgo.Monotonic, false)
 
 	log.Printf("mongourl=%s interval=%d debug=%t query=%#v", *mongourl, *interval, *debug, query)
 
 	wao := WhackAnOp{
-		OpFinder: MongoOpFinder{session},
-		OpKiller: MongoOpKiller{session},
+		OpFinder: MongoOpFinder{mongoSession},
+		OpKiller: MongoOpKiller{mongoSession},
 		Query:    query,
 		Tick:     time.Tick(time.Duration(*interval) * time.Second),
 		Debug:    *debug,
