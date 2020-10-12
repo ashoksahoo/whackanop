@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,7 +10,6 @@ import (
 	"regexp"
 	"time"
 
-	"encoding/base64"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -106,7 +106,7 @@ func validateMongoURL(mongourl string) error {
 	return nil
 }
 
-func getSecret(secretName string , region string) string {
+func getSecret(secretName string, region string) (string, error) {
 
 	//Create a Secrets Manager client
 	svc := secretsmanager.New(session.New(),
@@ -148,7 +148,7 @@ func getSecret(secretName string , region string) string {
 			// Message from an error.
 			fmt.Println(err.Error())
 		}
-		return ""
+		return "", err
 	}
 
 	// Decrypts secret using the associated KMS CMK.
@@ -156,16 +156,16 @@ func getSecret(secretName string , region string) string {
 	var secretString, decodedBinarySecret string
 	if result.SecretString != nil {
 		secretString = *result.SecretString
-		return secretString
+		return secretString, nil
 	} else {
 		decodedBinarySecretBytes := make([]byte, base64.StdEncoding.DecodedLen(len(result.SecretBinary)))
 		len, err := base64.StdEncoding.Decode(decodedBinarySecretBytes, result.SecretBinary)
 		if err != nil {
 			fmt.Println("Base64 Decode Error:", err)
-			return ""
+			return "", err
 		}
 		decodedBinarySecret = string(decodedBinarySecretBytes[:len])
-		return decodedBinarySecret
+		return decodedBinarySecret, nil
 	}
 }
 
@@ -179,7 +179,7 @@ func main() {
 	version := flags.Bool("version", false, "print the version and exit")
 	verbose := flags.Bool("verbose", false, "more verbose logging")
 
-	secretManager := flags.Bool("secret", false, "Enable SecretManager")
+	secretManager := flags.Bool("enableawssecret", false, "Enable SecretManager")
 	if *secretManager {
 		secretName := flags.String("secretname", "whackanop",
 			"SecretManager Name to connect")
@@ -187,11 +187,14 @@ func main() {
 			"SecretManager Name to connect")
 		secretPath := flags.String("secretpath", "local",
 			"SecretManager Path to connect")
-		var secretString = getSecret(*secretName, *region)
+		var secretString, secretErr = getSecret(*secretName, *region)
+		if secretErr != nil {
+			log.Fatal(secretErr)
+		}
 		secretBytes := []byte(secretString)
 		var raw map[string]interface{}
 		if err := json.Unmarshal(secretBytes, &raw); err != nil {
-			panic(err)
+			log.Fatal(err)
 		}
 		*mongourl = fmt.Sprintf("%v", raw[*secretPath])
 	}
