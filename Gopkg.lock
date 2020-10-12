@@ -2,13 +2,29 @@
 
 
 [[projects]]
+  name = "github.com/aws/aws-sdk-go"
+  packages = ["."]
+  revision = "6b30db0b2d35b6355e748079fcca9caee08ba2d6"
+  version = "v1.35.5"
+
+[[projects]]
+  name = "github.com/jmespath/go-jmespath"
+  packages = ["."]
+  revision = "c2b33e84"
+
+[[projects]]
   name = "gopkg.in/mgo.v2"
-  packages = [".","bson","internal/scram","sasl"]
+  packages = [
+    ".",
+    "bson",
+    "internal/scram",
+    "sasl"
+  ]
   revision = "c6a7dce14133ccac2dcac3793f1d6e2ef048503a"
 
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "5bc236996eb0c3dd772accbe0b5122e79b1ed74e50984babc0664a2ad68ad18f"
+  inputs-digest = "73da4b2c804d2f4adc212c811983e2f0b99c102099f13f0a73aa6dfa081e1b10"
   solver-name = "gps-cdcl"
   solver-version = 1
