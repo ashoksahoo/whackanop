@@ -1,21 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
-	"os"
-	"regexp"
-	"time"
-
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/secretsmanager"
-	"gopkg.in/mgo.v2"
-	"gopkg.in/mgo.v2/bson"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"log"
+	"os"
+	"regexp"
+	"time"
 )
 
 // Op represents a mongo operation.
@@ -35,12 +36,14 @@ type OpKiller interface {
 
 // MongoOpKiller implements OpKiller on a real mongo database.
 type MongoOpKiller struct {
-	Session *mgo.Session
+	Client mongo.Client
 }
 
 // Kill uses the $cmd.sys.killop virtual collection to kill an operation.
 func (mko MongoOpKiller) Kill(op Op) error {
-	return mko.Session.DB("admin").C("$cmd.sys.killop").Find(bson.M{"op": op.ID}).One(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return mko.Client.Database("admin").Collection("$cmd.sys.killop").FindOne(ctx, bson.M{"op": op.ID}).Decode(nil)
 }
 
 // OpFinder finds mongo operations. Interface mostly for testing.
@@ -50,7 +53,7 @@ type OpFinder interface {
 
 // MongoOpFinder implements OpFinder on a real mongo database.
 type MongoOpFinder struct {
-	Session *mgo.Session
+	Client mongo.Client
 }
 
 // Find operations matching a query.
@@ -58,7 +61,10 @@ func (mfo MongoOpFinder) Find(query bson.M) ([]Op, error) {
 	var result struct {
 		Inprog []Op `bson:"inprog"`
 	}
-	err := mfo.Session.DB("admin").C("$cmd.sys.inprog").Find(query).One(&result)
+	collection := mfo.Client.Database("admin").Collection("$cmd.sys.inprog")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := collection.FindOne(ctx, query).Decode(&result)
 	return result.Inprog, err
 }
 
@@ -201,7 +207,7 @@ func main() {
 
 	flags.Parse(os.Args[1:])
 	if *version {
-		fmt.Println(Version)
+		//fmt.Println(Version)
 		os.Exit(0)
 	}
 	var query bson.M
@@ -212,18 +218,23 @@ func main() {
 	if err := validateMongoURL(*mongourl); err != nil {
 		log.Fatal(err)
 	}
-	mongoSession, err := mgo.Dial(*mongourl)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer mongoSession.Close()
-	mongoSession.SetMode(mgo.Monotonic, false)
+	log.Printf("mongourl=%s interval=%d debug=%t query=%#v", *mongourl, *interval, *debug, query)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI("mongodb://localhost:27017"))
+
+	defer func() {
+		if err = client.Disconnect(ctx); err != nil {
+			panic(err)
+		}
+	}()
 
 	log.Printf("mongourl=%s interval=%d debug=%t query=%#v", *mongourl, *interval, *debug, query)
 
 	wao := WhackAnOp{
-		OpFinder: MongoOpFinder{mongoSession},
-		OpKiller: MongoOpKiller{mongoSession},
+		OpFinder: MongoOpFinder{*client},
+		OpKiller: MongoOpKiller{*client},
 		Query:    query,
 		Tick:     time.Tick(time.Duration(*interval) * time.Second),
 		Debug:    *debug,
